@@ -328,4 +328,8 @@ source "fs/nls/Kconfig"
 source "fs/dlm/Kconfig"
 source "fs/unicode/Kconfig"
 
+config KSU_SUSFS
+    bool "Enable SUSFS"
+    depends on KSU
+    default y
 endmenu
