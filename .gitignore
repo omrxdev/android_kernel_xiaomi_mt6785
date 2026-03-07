@@ -134,6 +134,12 @@ all.config
 
 # My Own
 out/
+susfs4ksu/
 *.rej
 *.orig
 *.patch
+*.log
+*.zip
+.vscode
+Image.gz
+
