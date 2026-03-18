@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ─── Toolchain ────────────────────────────────────────────────────────────────
-export ARCH=arm64
-export SUBARCH=arm64
-export CC=clang
-export LD=ld.lld
-export LLVM=1
-export LLVM_IAS=1
-export PATH="/home/omrxdev/linux-x86/clang-r563880/bin:$PATH"
-
 # ─── Variables ────────────────────────────────────────────────────────────────
 OUT=out
 LOG=build.log
@@ -18,7 +9,17 @@ JOBS=$(nproc --all)
 DEFCONFIG=rosemary_defconfig
 KERNEL_IMAGE=out/arch/arm64/boot/Image.gz
 ANYKERNEL_DIR=builds/AnyKernel3
-ZIP_NAME=kernel-$(date +%Y%m%d-%H%M).zip
+ZIP_OUT="$(pwd)/builds"
+TOOLCHAIN="/home/omrxdev/clang-r563880/bin"
+
+# ─── Toolchain ────────────────────────────────────────────────────────────────
+export ARCH=arm64
+export SUBARCH=arm64
+export CC="$TOOLCHAIN/clang"
+export LD="$TOOLCHAIN/ld.lld"
+export LLVM=1
+export LLVM_IAS=1
+export PATH="$TOOLCHAIN:$PATH"
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -32,10 +33,23 @@ ok()    { echo -e "${GREEN}[  OK ]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[ WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
+# ─── Trap Cleanup ─────────────────────────────────────────────────────────────
+trap 'error "Build interrupted!"; exit 130' INT TERM
+trap 'error "Unexpected error on line $LINENO"' ERR
+
+# ─── Beginning ────────────────────────────────────────────────────────────────
+echo -e "\n${YELLOW}====================\n By omrXdev\n====================${NC}\n"
+
 # ─── Sanity checks ────────────────────────────────────────────────────────────
-if ! command -v clang &>/dev/null; then
-    error "clang not found in PATH. Check your toolchain path."
+if [[ ! -f "$TOOLCHAIN/clang" ]]; then
+    error "Toolchain clang not found at $TOOLCHAIN/clang"
     exit 1
+fi
+
+# Warn if system clang shadows toolchain clang
+RESOLVED=$(command -v clang 2>/dev/null || true)
+if [[ "$RESOLVED" != "$TOOLCHAIN/clang" ]]; then
+    warn "System clang detected at $RESOLVED — toolchain will be used explicitly."
 fi
 
 if [[ ! -d "$ANYKERNEL_DIR" ]]; then
@@ -43,15 +57,22 @@ if [[ ! -d "$ANYKERNEL_DIR" ]]; then
     exit 1
 fi
 
+log "Toolchain: $("$TOOLCHAIN/clang" --version | head -1)"
+sleep 1
+
 # ─── Clean ────────────────────────────────────────────────────────────────────
 log "Cleaning previous build..."
 rm -rf "$OUT"
 rm -f "$LOG" "$ERRORLOG"
-touch "$LOG"
+touch "$LOG" "$ERRORLOG"
 
 # ─── Configure ────────────────────────────────────────────────────────────────
 log "Configuring with $DEFCONFIG..."
-make O="$OUT" "$DEFCONFIG"
+make O="$OUT" \
+    CC="$TOOLCHAIN/clang" \
+    LD="$TOOLCHAIN/ld.lld" \
+    LLVM=1 LLVM_IAS=1 \
+    "$DEFCONFIG"
 
 # ─── Inject SUSFS configs ─────────────────────────────────────────────────────
 log "Injecting SUSFS Kconfig options..."
@@ -70,7 +91,6 @@ SUSFS_CONFIGS=(
 
 for cfg in "${SUSFS_CONFIGS[@]}"; do
     key="${cfg%=*}"
-    # Remove any existing entry (=y, =n, or unset line) then append
     sed -i "/^${key}[= ]/d" "$OUT/.config"
     sed -i "/# ${key} is not set/d" "$OUT/.config"
     echo "$cfg" >> "$OUT/.config"
@@ -78,7 +98,11 @@ done
 
 # Sync dependencies after manual config edits
 log "Running olddefconfig to resolve dependencies..."
-make O="$OUT" olddefconfig
+make O="$OUT" \
+    CC="$TOOLCHAIN/clang" \
+    LD="$TOOLCHAIN/ld.lld" \
+    LLVM=1 LLVM_IAS=1 \
+    olddefconfig
 
 # Verify critical config is present
 if ! grep -q "^CONFIG_KSU_SUSFS_SUS_MOUNT=y" "$OUT/.config"; then
@@ -88,25 +112,37 @@ fi
 ok "SUSFS configs verified."
 
 # ─── Build ────────────────────────────────────────────────────────────────────
-log "Building kernel with $JOBS jobs..."
+# Set zip name here so kernel version is available after configure
+KVER=$(make O="$OUT" -s kernelversion 2>/dev/null || echo "unknown")
+ZIP_NAME="kernel-${KVER}-$(date +%Y%m%d-%H%M).zip"
+
+log "Building kernel ${KVER} with $JOBS jobs..."
 START_TIME=$(date +%s)
 
-# Monitor Build
-tail -f android_xiaomi_kernel_mt6785/build.log |
- grep -Ei "error:" && echo "ERROR FOUND"
+time make O="$OUT" -j"$JOBS" \
+    CC="$TOOLCHAIN/clang" \
+    LD="$TOOLCHAIN/ld.lld" \
+    AR="$TOOLCHAIN/llvm-ar" \
+    NM="$TOOLCHAIN/llvm-nm" \
+    OBJCOPY="$TOOLCHAIN/llvm-objcopy" \
+    OBJDUMP="$TOOLCHAIN/llvm-objdump" \
+    STRIP="$TOOLCHAIN/llvm-strip" \
+    LLVM=1 LLVM_IAS=1 \
+    2>&1 | tee "$LOG"
+BUILD_STATUS=${PIPESTATUS[0]}
 
-if ! time make O="$OUT" -j"$JOBS" 2>&1 | tee "$LOG"; then
-    error "Build failed! Extracting errors..."
-    grep -E "error:|undefined symbol" "$LOG" > "$ERRORLOG" || true
-    echo ""
+END_TIME=$(date +%s)
+ELAPSED=$(( END_TIME - START_TIME ))
+
+if [[ $BUILD_STATUS -ne 0 ]]; then
+    grep -E "^.*error:|undefined symbol" "$LOG" > "$ERRORLOG" || true
+    error "Build failed in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
     error "═══════════════════════ BUILD ERRORS ═══════════════════════"
     cat "$ERRORLOG"
     error "═════════════════════════════════════════════════════════════"
     exit 1
 fi
 
-END_TIME=$(date +%s)
-ELAPSED=$(( END_TIME - START_TIME ))
 ok "Build completed in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
 
 # ─── Package ──────────────────────────────────────────────────────────────────
@@ -119,7 +155,11 @@ log "Packaging AnyKernel3 zip..."
 cp "$KERNEL_IMAGE" "$ANYKERNEL_DIR/"
 
 pushd "$ANYKERNEL_DIR" > /dev/null
-zip -r9 "../$ZIP_NAME" -- * -x '*.zip'
+zip -r9 "$ZIP_OUT/$ZIP_NAME" -- * -x '*.zip'
 popd > /dev/null
 
-ok "Done! Output: builds/$ZIP_NAME"
+ok "Done! Output: $ZIP_OUT/$ZIP_NAME"
+sleep 1
+
+ok "Clean leftovers"
+rm -f "$ANYKERNEL_DIR"/Image.gz "$ANYKERNEL_DIR"/Image
