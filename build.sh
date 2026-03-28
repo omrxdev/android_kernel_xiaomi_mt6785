@@ -12,7 +12,7 @@ DEFCONFIG=rosemary_defconfig
 KERNEL_IMAGE=out/arch/arm64/boot/Image.gz
 ANYKERNEL_DIR=builds/AnyKernel3
 ZIP_OUT="$(pwd)/builds"
-TOOLCHAIN="/home/omrxdev/clang-r563880/bin"
+TOOLCHAIN="/home/omrxdev/toolchains/clang-r563880/bin"
 TOOLCHAIN_NAME=clang
 
 # ─── Toolchain ────────────────────────────────────────────────────────────────
