@@ -31,6 +31,9 @@
 #include <linux/ima.h>
 #include <linux/dnotify.h>
 #include <linux/compat.h>
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+#include <linux/susfs_def.h>
+#endif
 
 #include "internal.h"
 #include <trace/hooks/syscall_check.h>
@@ -1126,7 +1129,7 @@ struct file *file_open_root(struct dentry *dentry, struct vfsmount *mnt,
 EXPORT_SYMBOL(file_open_root);
 
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-extern struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);
+extern int susfs_open_redirect_spoof_do_sys_openat(struct inode *inode, struct filename **tmp);
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 
 long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
@@ -1136,7 +1139,6 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 	struct filename *tmp;
 
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	struct filename *fake_filename = NULL;
 	bool is_inode_open_redirect = false;
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 
@@ -1144,6 +1146,9 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 		return fd;
 
 	tmp = getname(filename);
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+retry:
+#endif
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
 
@@ -1154,15 +1159,12 @@ retry:
 	if (fd >= 0) {
 		struct file *f = do_filp_open(dfd, tmp, &op);
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-		if (!is_inode_open_redirect && f && !IS_ERR(f)) {
-			struct inode *inode = file_inode(f);
-			if (SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode)) {
-				fake_filename = susfs_open_redirect_spoof_do_sys_openat(inode);
-				if (fake_filename && !IS_ERR(fake_filename)) {
+		if (f && !IS_ERR(f) && !is_inode_open_redirect) {
+			if (PRE_CHECK_OPEN_REDIRECT_WITHOUT_UID_CHECK(file_inode(f))) {
+				if (!susfs_open_redirect_spoof_do_sys_openat(file_inode(f), &tmp)) {
 					is_inode_open_redirect = true;
 					filp_close(f, NULL);
-					putname(tmp);
-					tmp = fake_filename;
+					put_unused_fd(fd);
 					goto retry;
 				}
 			}

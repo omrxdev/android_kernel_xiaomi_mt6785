@@ -2,6 +2,7 @@
 #define KSU_SUSFS_DEF_H
 
 #include <linux/bits.h>
+#include <linux/cred.h>
 
 /********/
 /* ENUM */
@@ -9,8 +10,8 @@
 /* shared with userspace ksu_susfs tool */
 #define SUSFS_MAGIC 0xFAFAFAFA
 #define CMD_SUSFS_ADD_SUS_PATH 0x55550
-#define CMD_SUSFS_SET_ANDROID_DATA_ROOT_PATH 0x55551
-#define CMD_SUSFS_SET_SDCARD_ROOT_PATH 0x55552
+#define CMD_SUSFS_SET_ANDROID_DATA_ROOT_PATH 0x55551 /* deprecated */
+#define CMD_SUSFS_SET_SDCARD_ROOT_PATH 0x55552 /* deprecated */
 #define CMD_SUSFS_ADD_SUS_PATH_LOOP 0x55553
 #define CMD_SUSFS_ADD_SUS_MOUNT 0x55560 /* deprecated */
 #define CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS 0x55561
@@ -41,13 +42,14 @@
 #define TRY_UMOUNT_DEFAULT 0 /* used by susfs_try_umount() */
 #define TRY_UMOUNT_DETACH 1 /* used by susfs_try_umount() */
 
-#define DEFAULT_KSU_MNT_ID 300000 /* used by mount->mnt_id */
+#define DEFAULT_KSU_MNT_ID 500000 /* used by mount->mnt_id */
 #define DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE 1000000 /* used by vfsmount->susfs_mnt_id_backup */
-#define DEFAULT_KSU_MNT_GROUP_ID 3000 /* used by mount->mnt_group_id */
+#define DEFAULT_KSU_MNT_GROUP_ID 5000 /* used by mount->mnt_group_id */
+#define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT 0x80000000 /* used for mounts that are unshared by ksu process */
 
 /*
  * mount->mnt.susfs_mnt_id_backup => storing original mount's mnt_id
- * inode->i_mapping->flags => A 'unsigned long' type storing flag 'AS_FLAGS_', bit 1 to 31 is not usable since 6.12
+ * inode->i_state => A 'unsigned long' type storing flag 'AS_FLAGS_', bit 1 to 31 is not usable since 6.12
  * nd->state => storing flag 'ND_STATE_'
  * nd->flags => storing flag 'ND_FLAGS_'
  * task_struct->thread_info.flags => storing flag 'TIF_'
@@ -94,16 +96,11 @@ static inline bool susfs_is_current_proc_umounted_app(void) {
 			current_uid().val >= 10000);
 }
 
-#define SUSFS_IS_INODE_SUS_MAP(inode) \
-		inode && \
-		unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_state)) && \
-		susfs_is_current_proc_umounted_app()
-
-#define SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
+#define PRE_CHECK_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
 		inode && \
 		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_state))
 
-#define SUSFS_IS_INODE_OPEN_REDIRECT(inode) \
+#define PRE_CHECK_OPEN_REDIRECT(inode) \
 		inode && \
 		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_state)) && \
 		susfs_is_current_proc_umounted_app()
