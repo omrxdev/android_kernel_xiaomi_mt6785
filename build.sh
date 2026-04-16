@@ -96,7 +96,6 @@ sleep 1
 
 # ─── Clean ────────────────────────────────────────────────────────────────────
 log "Cleaning previous build..."
-rm -rf "$OUT"
 rm -f "$LOG" "$ERRORLOG"
 touch "$LOG" "$ERRORLOG"
 
