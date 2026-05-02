@@ -1,4 +1,4 @@
-[submodule "drivers/kernelsu"]
+[submodule "ksu"]
 	path = drivers/kernelsu
-	url = https://github.com/KernelSU-Next/KernelSU-Next
+	url = https://github.com/KernelSU-Next/KernelSU-Next.git
 	branch = legacy

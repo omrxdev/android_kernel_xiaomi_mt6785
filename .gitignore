@@ -133,3 +133,4 @@ all.config
 *.kdev4
 *.log
 out/
+*.zip
