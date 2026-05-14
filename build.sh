@@ -41,29 +41,29 @@ extract_errors() {
     local logfile="$1"
     local outfile="$2"
 
-    # Clear previous error log
     > "$outfile"
 
-    # Kernel build errors: file:line:col: error: message
+    # Compiler errors: file:line:col: error:
     grep -E "^[^:]+\.[chS]:[0-9]+:[0-9]+: error:" "$logfile" >> "$outfile" || true
 
     # Linker errors: undefined symbol / undefined reference
     grep -E "undefined (symbol|reference)" "$logfile" >> "$outfile" || true
 
-    # Kbuild errors: make[N]: *** [...] Error N
-    grep -E "^\s*make(\[[0-9]+\])?: \*\*\*" "$logfile" >> "$outfile" || true
-
-    # ld.lld fatal errors
+    # ld.lld errors (including the >>> context lines that follow)
     grep -E "^ld\.lld: error:" "$logfile" >> "$outfile" || true
 
-    # clang fatal errors (not build errors, e.g. missing headers)
+    # Kbuild errors
+    grep -E "^\s*make(\[[0-9]+\])?: \*\*\*" "$logfile" >> "$outfile" || true
+
+    # clang fatal errors
     grep -E "^clang.*: error:" "$logfile" >> "$outfile" || true
 
-    # Deduplicate while preserving order
+    local count
+    count=$(grep -cE "error:|undefined (symbol|reference)" "$outfile" || true)
+
+    # Dedup only for clean display
     sort -u "$outfile" -o "$outfile"
 
-    local count
-    count=$(wc -l < "$outfile")
     echo "$count"
 }
 
@@ -137,26 +137,50 @@ fi
 ok "SUSFS configs verified."
 
 # ─── Build ────────────────────────────────────────────────────────────────────
-# Set zip name here so kernel version is available after configure
 KVER=$(make O="$OUT" -s kernelversion 2>/dev/null || echo "unknown")
 ZIP_NAME="kernel-${KVER}-$(date +%Y%m%d-%H%M).zip"
 
 log "Building kernel ${KVER} with $JOBS jobs..."
 START_TIME=$(date +%s)
 
-# Monitor Build
-log "Starting Build Monitor"
-sleep 1
-kitty sh -c "tail -f "$LOG" | grep -E "error:" && echo "Error Found" | tee "$ERRORLOG"; exec bash" 2>/dev/null &
-sleep 1
+# ─── Build ────────────────────────────────────────────────────────────────────
+KVER=$(make O="$OUT" -s kernelversion 2>/dev/null || echo "unknown")
+ZIP_NAME="kernel-${KVER}-$(date +%Y%m%d-%H%M).zip"
 
+log "Building kernel ${KVER} with $JOBS jobs..."
+START_TIME=$(date +%s)
+
+set +e
 time make O="$OUT" -j"$JOBS" 2>&1 | tee "$LOG"
 BUILD_STATUS=${PIPESTATUS[0]}
+set -e
 
 END_TIME=$(date +%s)
 ELAPSED=$(( END_TIME - START_TIME ))
 
-ok "Build completed in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
+# ─── Error Report ─────────────────────────────────────────────────────────────
+if [[ "$BUILD_STATUS" -ne 0 ]]; then
+    error "Build FAILED in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s (exit $BUILD_STATUS)"
+
+    log "Scanning build log for errors..."
+    ERROR_COUNT=$(extract_errors "$LOG" "$ERRORLOG")
+
+    if [[ "$ERROR_COUNT" -gt 0 ]]; then
+        warn "$ERROR_COUNT error(s) captured."
+        read -rp "$(echo -e "${YELLOW}Display errors? [y/N]: ${NC}")" SHOW_ERRORS
+        if [[ "${SHOW_ERRORS,,}" == "y" ]]; then
+            echo -e "\n${RED}──── Errors ($ERROR_COUNT) ────${NC}"
+            cat "$ERRORLOG"
+            echo -e "${RED}──────────────────────${NC}\n"
+        fi
+    else
+        warn "Build failed but no errors were extracted — check $LOG manually."
+    fi
+
+    exit "$BUILD_STATUS"
+else
+    ok "Build completed in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
+fi
 
 # ─── Package ──────────────────────────────────────────────────────────────────
 if [[ ! -f "$KERNEL_IMAGE" ]]; then
