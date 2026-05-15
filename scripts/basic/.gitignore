@@ -1,1 +1,3 @@
 fixdep
+modules.order
+*.cmd

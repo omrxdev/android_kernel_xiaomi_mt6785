@@ -132,5 +132,9 @@ all.config
 # Kdevelop4
 *.kdev4
 *.log
+
+# My Own
 out/
-*.zip
+*.rej
+*.orig
+.vscode
