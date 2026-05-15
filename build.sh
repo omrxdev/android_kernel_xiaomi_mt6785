@@ -12,13 +12,27 @@ DEFCONFIG=rosemary_defconfig
 KERNEL_IMAGE=out/arch/arm64/boot/Image.gz
 ANYKERNEL_DIR=builds/AnyKernel3
 ZIP_OUT="$(pwd)/builds"
-TOOLCHAIN="/home/omrxdev/toolchains/clang-r563880/bin"
-TOOLCHAIN_NAME=clang
+TOOLCHAIN="$HOME/toolchains/clang-r563880/bin"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --toolchain)
+      TOOLCHAIN="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$TOOLCHAIN" ]]; then
+  echo "Error: --toolchain <path> is required" >&2
+  exit 1
+fi
 
 # ─── Toolchain ────────────────────────────────────────────────────────────────
-export ARCH="$ARCH"
-export SUBARCH="$SUBARCH"
-export CC="$TOOLCHAIN_NAME"
+export ARCH SUBARCH
+export CC=clang
 export LD=ld.lld
 export LLVM=1
 export LLVM_IAS=1
@@ -36,102 +50,59 @@ ok()    { echo -e "${GREEN}[ OK ]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[ WARN ]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
-# ─── Error Extraction ─────────────────────────────────────────────────────────
-extract_errors() {
-    local logfile="$1"
-    local outfile="$2"
-
-    # Clear previous error log
-    > "$outfile"
-
-    # Kernel build errors: file:line:col: error: message
-    grep -E "^[^:]+\.[chS]:[0-9]+:[0-9]+: error:" "$logfile" >> "$outfile" || true
-
-    # Linker errors: undefined symbol / undefined reference
-    grep -E "undefined (symbol|reference)" "$logfile" >> "$outfile" || true
-
-    # Kbuild errors: make[N]: *** [...] Error N
-    grep -E "^\s*make(\[[0-9]+\])?: \*\*\*" "$logfile" >> "$outfile" || true
-
-    # ld.lld fatal errors
-    grep -E "^ld\.lld: error:" "$logfile" >> "$outfile" || true
-
-    # clang fatal errors (not build errors, e.g. missing headers)
-    grep -E "^clang.*: error:" "$logfile" >> "$outfile" || true
-
-    # Deduplicate while preserving order
-    sort -u "$outfile" -o "$outfile"
-
-    local count
-    count=$(wc -l < "$outfile")
-    echo "$count"
-}
-
-# ─── Trap Cleanup ─────────────────────────────────────────────────────────────
-trap 'error "Build interrupted!"; exit 130' INT TERM
-trap 'error "Unexpected error on line $LINENO"' ERR
-
-# ─── Beginning ────────────────────────────────────────────────────────────────
+# ─── Banner ───────────────────────────────────────────────────────────────────
 echo -e "\n${YELLOW}====================\n By omrXdev\n====================${NC}\n"
 
 # ─── Sanity checks ────────────────────────────────────────────────────────────
-if [[ ! -f "$TOOLCHAIN/clang" ]]; then
-    error "Toolchain clang not found at $TOOLCHAIN/clang"
-    exit 1
-fi
+[[ ! -f "$TOOLCHAIN/clang" ]] && { error "Toolchain not found at $TOOLCHAIN/clang Please run with --toolchain to configure it, or set it manually in the build script."; exit 1; }
+[[ ! -d "$ANYKERNEL_DIR"   ]] && { error "AnyKernel3 not found at $ANYKERNEL_DIR. creating..."; mkdir -p "$ANYKERNEL_DIR";  exit 1; }
 
-RESOLVED=$(command -v clang 2>/dev/null || true)
-if [[ "$RESOLVED" != "$TOOLCHAIN/clang" ]]; then
-    warn "System clang detected at $RESOLVED — toolchain will be used explicitly."
-fi
-
-if [[ ! -d "$ANYKERNEL_DIR" ]]; then
-    error "AnyKernel3 directory not found at $ANYKERNEL_DIR"
-    exit 1
-fi
-
-log "Toolchain: $("$TOOLCHAIN/clang" --version | head -1)"
-sleep 1
+log "Toolchain: $("$TOOLCHAIN/clang" --version | head -1)" | sleep 0.5
 
 # ─── Clean ────────────────────────────────────────────────────────────────────
-log "Cleaning previous build..."
-rm -f "$LOG" "$ERRORLOG"
-touch "$LOG" "$ERRORLOG"
+log "Cleaning previous build artifacts..."
+rm -f "$LOG" "$ERRORLOG" | sleep 0.5
 
 # ─── Configure ────────────────────────────────────────────────────────────────
 log "Configuring with $DEFCONFIG..."
 make O="$OUT" "$DEFCONFIG"
 
-# Sync dependencies
-log "Running olddefconfig to resolve dependencies..."
-make O="$OUT" olddefconfig
+grep -q "^CONFIG_KSU_SUSFS_SUS_MOUNT=y" "$OUT/.config" \
+    || { error "CONFIG_KSU_SUSFS_SUS_MOUNT not set — check Kconfig dependency chain."; exit 1; }
+ok "SUSFS configs verified."
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 KVER=$(make O="$OUT" -s kernelversion 2>/dev/null || echo "unknown")
 ZIP_NAME="kernel-${KVER}-$(date +%Y%m%d-%H%M).zip"
 
-log "Building kernel ${KVER} with $JOBS jobs..."
+log "Kernel Version: ${KVER}"
 START_TIME=$(date +%s)
 
-# Monitor Build
-log "Starting Build Monitor"
-sleep 1
-kitty sh -c "tail -f "$LOG" | grep -E "error:" && echo "Error Found" | tee "$ERRORLOG"; exec bash" 2>/dev/null &
-sleep 1
-
-time make O="$OUT" -j"$JOBS" 2>&1 | tee "$LOG"
+set +e
+make O="$OUT" -j"$JOBS" 2>&1 | tee "$LOG"
 BUILD_STATUS=${PIPESTATUS[0]}
+set -e
 
-END_TIME=$(date +%s)
-ELAPSED=$(( END_TIME - START_TIME ))
+ELAPSED=$(( $(date +%s) - START_TIME ))
+
+# ─── Result ───────────────────────────────────────────────────────────────────
+if [[ "$BUILD_STATUS" -ne 0 ]]; then
+    error "Build FAILED in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
+
+    grep -A 2 -E \
+        '(^[^:]+\.[chS]:[0-9]+:[0-9]+: error:|undefined (symbol|reference)|^ld\.lld: error:|^clang.*: error:)' \
+        "$LOG" > "$ERRORLOG" || true
+
+    [[ -s "$ERRORLOG" ]] && warn "Errors written to $ERRORLOG" \
+                         || warn "No errors extracted — check $LOG manually."
+
+    exit "$BUILD_STATUS"
+fi
 
 ok "Build completed in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
 
 # ─── Package ──────────────────────────────────────────────────────────────────
-if [[ ! -f "$KERNEL_IMAGE" ]]; then
-    error "Kernel image not found at $KERNEL_IMAGE"
-    exit 1
-fi
+[[ ! -f "$KERNEL_IMAGE" ]] && { error "Kernel image not found at $KERNEL_IMAGE"; exit 1; }
 
 log "Packaging AnyKernel3 zip..."
 rm -f "$ANYKERNEL_DIR"/Image.gz "$ANYKERNEL_DIR"/Image
@@ -141,11 +112,6 @@ pushd "$ANYKERNEL_DIR" > /dev/null
 zip -r9 "$ZIP_OUT/$ZIP_NAME" -- * -x '*.zip'
 popd > /dev/null
 
-ok "Done! Output: $ZIP_OUT/$ZIP_NAME"
-sleep 1
-
-log "Cleaning leftovers\n"
 rm -f "$ANYKERNEL_DIR"/Image.gz "$ANYKERNEL_DIR"/Image
 
-ok "Done. Leaving now"
-sleep 1
+ok "Done! Output: $ZIP_OUT/$ZIP_NAME"
