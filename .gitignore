@@ -142,4 +142,6 @@ susfs4ksu/
 *.zip
 .vscode
 Image.gz
+*.o
+*.cmd
 
