@@ -10,121 +10,62 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      OUT: out
-      ARCH: arm64
-      SUBARCH: arm64
-      DEFCONFIG: rosemary_defconfig
-      KERNEL_IMAGE: out/arch/arm64/boot/Image.gz
-      ANYKERNEL_DIR: builds/AnyKernel3
-      ZIP_OUT: ${{ github.workspace }}/builds
-      TOOLCHAIN_DIR: ${{ github.workspace }}/clang
-      TOOLCHAIN_NAME: clang
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          submodules: recursive  
+          submodules: recursive
 
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev zip curl
+          sudo apt install -y \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev zip curl python3
 
       - name: Cache clang toolchain
+        id: cache-clang
         uses: actions/cache@v4
         with:
-          path: ${{ env.TOOLCHAIN_DIR }}
-          key: clang-r563880
+          path: ${{ github.workspace }}/toolchains/clang-r563880
+          key: clang-r563880-v1
 
-      - name: Setup clang r563880
+      - name: Download clang r563880
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          if [ ! -f "$TOOLCHAIN_DIR/bin/clang" ]; then
-            mkdir -p $TOOLCHAIN_DIR
-            cd $TOOLCHAIN_DIR
+          TOOLCHAIN_DIR="${{ github.workspace }}/toolchains/clang-r563880"
+          mkdir -p "$TOOLCHAIN_DIR"
 
-            curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-qpr2-release/clang-r563880.tar.gz -o clang-r563880.tar.gz
-            tar -xzf clang-r563880.tar.gz
-          fi
+          curl -fL \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-qpr2-release/clang-r563880.tar.gz" \
+            -o /tmp/clang.tar.gz
 
-      - name: Setup environment
+          tar -xzf /tmp/clang.tar.gz -C "$TOOLCHAIN_DIR"
+
+      - name: Verify toolchain
         run: |
-          echo "ARCH=$ARCH" >> $GITHUB_ENV
-          echo "SUBARCH=$SUBARCH" >> $GITHUB_ENV
-          echo "CC=$TOOLCHAIN_NAME" >> $GITHUB_ENV
-          echo "LD=ld.lld" >> $GITHUB_ENV
-          echo "LLVM=1" >> $GITHUB_ENV
-          echo "LLVM_IAS=1" >> $GITHUB_ENV
-          echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
+          "${{ github.workspace }}/toolchains/clang-r563880/bin/clang" --version
 
-      - name: Prepare directories
-        run: |
-          rm -rf $OUT   # 🔥 ensures clean build every time
-          mkdir -p $OUT
-          mkdir -p $ZIP_OUT
-
-      - name: Configure kernel
-        run: |
-          make O=$OUT $DEFCONFIG
-
-      - name: Inject SUSFS configs
-        run: |
-          CONFIG_FILE="$OUT/.config"
-
-          CONFIGS=(
-            "CONFIG_KSU_SUSFS=y"
-            "CONFIG_KSU_SUSFS_SUS_PATH=y"
-            "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-            "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-            "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y"
-            "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
-            "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-            "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-            "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-            "CONFIG_KSU_SUSFS_SUS_SU=y"
-          )
-
-          for cfg in "${CONFIGS[@]}"; do
-            key="${cfg%=*}"
-            sed -i "/^${key}[= ]/d" "$CONFIG_FILE"
-            sed -i "/# ${key} is not set/d" "$CONFIG_FILE"
-            echo "$cfg" >> "$CONFIG_FILE"
-          done
-
-          make O=$OUT olddefconfig
-
-      - name: Verify config
-        run: |
-          grep -q "^CONFIG_KSU_SUSFS_SUS_MOUNT=y" "$OUT/.config"
+      - name: Make build.sh executable
+        run: chmod +x build.sh
 
       - name: Build kernel
         run: |
-          make O=$OUT -j$(nproc --all)
+          ./build.sh --toolchain "${{ github.workspace }}/toolchains/clang-r563880/bin"
 
-      - name: Get kernel version
-        id: kver
-        run: |
-          KVER=$(make O=$OUT -s kernelversion || echo "unknown")
-          echo "kver=$KVER" >> $GITHUB_OUTPUT
-
-      - name: Package AnyKernel3
-        run: |
-          if [ ! -f "$KERNEL_IMAGE" ]; then
-            echo "Kernel image not found!"
-            exit 1
-          fi
-
-          ZIP_NAME="kernel-${{ steps.kver.outputs.kver }}-$(date +%Y%m%d-%H%M).zip"
-
-          rm -f "$ANYKERNEL_DIR/Image.gz" "$ANYKERNEL_DIR/Image"
-          cp "$KERNEL_IMAGE" "$ANYKERNEL_DIR/"
-
-          cd "$ANYKERNEL_DIR"
-          zip -r9 "$ZIP_OUT/$ZIP_NAME" . -x '*.zip'
-
-      - name: Upload artifact
+      - name: Upload kernel artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: kernel-build
           path: builds/*.zip
+
+      - name: Upload error logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build.log
+            errors.log
+          if-no-files-found: ignore
