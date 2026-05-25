@@ -106,8 +106,11 @@ if [[ "$BUILD_STATUS" -ne 0 ]]; then
     error "Build FAILED in $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
 
     grep -A 2 -E \
-        '(^[^:]+\.[chS]:[0-9]+:[0-9]+: error:|undefined (symbol|reference)|^ld\.lld: error:|^clang.*: error:)' \
+        '(^[^:]+\.[chS]:[0-9]+:[0-9]+: error:|undefined (symbol|reference)|^clang.*: error:)' \
         "$LOG" > "$ERRORLOG" || true
+    grep -A 5 -E \
+          '(^ld\.lld: error:|undefined symbol|undefined reference)' \
+          "$LOG" >> "$ERRORLOG" || true
 
     [[ -s "$ERRORLOG" ]] && warn "Errors written to $ERRORLOG" \
                          || warn "No errors extracted — check $LOG manually."
