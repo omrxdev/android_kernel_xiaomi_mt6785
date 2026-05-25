@@ -21,7 +21,24 @@ jobs:
           sudo apt update
           sudo apt install -y \
             build-essential bc bison flex \
-            libssl-dev libelf-dev zip curl python3
+            libssl-dev libelf-dev zip curl python3 ccache
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=5G
+          ccache --set-config=compression=true
+          ccache --set-config=compression_level=1
+          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "/usr/lib/ccache" >> $GITHUB_PATH
+
+      - name: Cache ccache storage
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-kernel-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-kernel-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-kernel-${{ runner.os }}-
 
       - name: Cache clang toolchain
         id: cache-clang
@@ -50,8 +67,14 @@ jobs:
         run: chmod +x build.sh
 
       - name: Build kernel
+        env:
+          CCACHE_DIR: ${{ env.CCACHE_DIR }}
         run: |
           ./build.sh --toolchain "${{ github.workspace }}/toolchains/clang-r563880/bin"
+
+      - name: Print ccache stats
+        if: always()
+        run: ccache --show-stats
 
       - name: Upload kernel artifact
         if: success()
