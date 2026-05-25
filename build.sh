@@ -19,8 +19,24 @@ while [[ $# -gt 0 ]]; do
       TOOLCHAIN="$2"
       shift 2
       ;;
+    --clean)
+      make mrproper O="$OUT" > /dev/null 2>&1 || true
+      make mrproper > /dev/null 2>&1 || true
+      rm -rf "$OUT" "$LOG" "$ERRORLOG"
+      echo "Cleaned build artifacts."
+      exit 0
+      ;;
+    --help|-h)
+      echo "Usage: $0 [options]"
+      echo "Options:"
+      echo "  --toolchain <path>   Path to Clang toolchain (default: $TOOLCHAIN)"
+      echo "  --clean              Clean previous build artifacts"
+      echo "  -h, --help           Show this help message and exit"
+      exit 0
+      ;;
     *)
-      shift
+      echo "Unknown option: $1" >&2
+      exit 1
       ;;
   esac
 done
