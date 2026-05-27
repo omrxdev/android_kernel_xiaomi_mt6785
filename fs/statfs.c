@@ -77,6 +77,14 @@ int vfs_statfs(const struct path *path, struct kstatfs *buf)
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	struct mount *mnt;
 
+	if (SUSFS_IS_INODE_OPEN_REDIRECT(inode)) {
+		if (susfs_open_redirect_spoof_vfs_statfs(inode, buf))
+			goto orig_flow;
+		return 0;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	mnt = real_mount(path->mnt);
 	if (likely(susfs_is_current_proc_umounted())) {
 		for (; mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) {}

@@ -84,4 +84,24 @@ static inline bool susfs_is_current_proc_umounted(void) {
 static inline void susfs_set_current_proc_umounted(void) {
 	set_ti_thread_flag(&current->thread_info, TIF_PROC_UMOUNTED);
 }
+
+static inline bool susfs_is_current_proc_umounted_app(void) {
+	return (test_ti_thread_flag(&current->thread_info, TIF_PROC_UMOUNTED) &&
+			current_uid().val >= 10000);
+}
+
+#define SUSFS_IS_INODE_SUS_MAP(inode) \
+		inode && \
+		unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_state)) && \
+		susfs_is_current_proc_umounted_app()
+
+#define SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
+		inode && \
+		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_state))
+
+#define SUSFS_IS_INODE_OPEN_REDIRECT(inode) \
+		inode && \
+		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_state)) && \
+		susfs_is_current_proc_umounted_app()
+
 #endif // #ifndef KSU_SUSFS_DEF_H

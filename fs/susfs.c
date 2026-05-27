@@ -209,21 +209,7 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
-	if (!path.dentry->d_inode) {
-		info.err = -EINVAL;
-		goto out_path_put_path;
-	}
-	inode = d_inode(path.dentry);
-
-	if (susfs_starts_with(info.target_pathname, "/storage/") ||
-		susfs_starts_with(info.target_pathname, "/sdcard/"))
-	{
-		info.err = -EINVAL;
-		SUSFS_LOGE("path starts with /storage and /sdcard cannot be added by add_sus_path_loop\n");
-		goto out_path_put_path;
-	}
-
-	new_list = kmalloc(sizeof(struct st_susfs_sus_path_list), GFP_KERNEL);
+	new_list = kzalloc(sizeof(struct st_susfs_sus_path_list), GFP_KERNEL);
 	if (!new_list) {
 		info.err = -ENOMEM;
 		goto out_path_put_path;
@@ -473,7 +459,7 @@ void susfs_add_sus_kstat(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
-	new_entry = kmalloc(sizeof(struct st_susfs_sus_kstat_hlist), GFP_KERNEL);
+	new_entry = kzalloc(sizeof(struct st_susfs_sus_kstat_hlist), GFP_KERNEL);
 	if (!new_entry) {
 		info.err = -ENOMEM;
 		goto out_copy_to_user;
@@ -541,7 +527,15 @@ void susfs_update_sus_kstat(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
-	hash_for_each_safe(SUS_KSTAT_HLIST, bkt, tmp_node, tmp_entry, node) {
+	new_entry = kzalloc(sizeof(struct st_susfs_sus_kstat_hlist), GFP_KERNEL);
+	if (!new_entry) {
+		info.err = -ENOMEM;
+		goto out_copy_to_user;
+	}
+
+
+	spin_lock(&susfs_spin_lock_sus_kstat);
+	hash_for_each_possible(SUS_KSTAT_HLIST, tmp_entry, node, info.target_ino) {
 		if (!strcmp(tmp_entry->info.target_pathname, info.target_pathname)) {
 			if (susfs_update_sus_kstat_inode(tmp_entry->info.target_pathname)) {
 				info.err = -EINVAL;
@@ -641,7 +635,7 @@ void susfs_add_try_umount(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
-	new_list = kmalloc(sizeof(struct st_susfs_try_umount_list), GFP_KERNEL);
+	new_list = kzalloc(sizeof(struct st_susfs_try_umount_list), GFP_KERNEL);
 	if (!new_list) {
 		info.err = -ENOMEM;
 		goto out_copy_to_user;
@@ -862,6 +856,76 @@ void susfs_add_open_redirect(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
+	new_entry_target = kzalloc(sizeof(struct st_susfs_open_redirect_hlist), GFP_KERNEL);
+	if (!new_entry_target) {
+		info.err = -ENOMEM;
+		goto out_path_put_target_path;
+	}
+
+	new_entry_redirected = kzalloc(sizeof(struct st_susfs_open_redirect_hlist), GFP_KERNEL);
+	if (!new_entry_redirected) {
+		info.err = -ENOMEM;
+		kfree(new_entry_target);
+		goto out_path_put_target_path;
+	}
+
+	// check for existing entries, delete it first if so
+	spin_lock(&susfs_spin_lock_open_redirect);
+	hash_for_each_possible(OPEN_REDIRECT_HLIST, tmp_entry_target, node, target_inode->i_ino) {
+		if (!strcmp(tmp_entry_target->info.target_pathname, info.target_pathname)) {
+			if (tmp_entry_target->reversed_lookup_only) {
+				SUSFS_LOGE("duplicated '%s' cannot be removed/added because it is used for reversed lookup only\n", info.target_pathname);
+				spin_unlock(&susfs_spin_lock_open_redirect);
+				info.err = -EINVAL;
+				kfree(new_entry_redirected);
+				kfree(new_entry_target);
+				goto out_path_put_target_path;
+			}
+			is_first_dup_found = true;
+			hash_del_rcu(&tmp_entry_target->node);
+			break;
+		}
+	}
+
+	if (is_first_dup_found) {
+		hash_for_each_possible(OPEN_REDIRECT_HLIST, tmp_entry_redirected, node, redirected_inode->i_ino) {
+			if (!strcmp(tmp_entry_redirected->info.target_pathname, info.redirected_pathname)) {
+				is_second_dup_found = true;
+				hash_del_rcu(&tmp_entry_redirected->node);
+				break;
+			}
+		}
+		spin_unlock(&susfs_spin_lock_open_redirect);
+		synchronize_rcu();
+		if (is_second_dup_found)
+			kfree(tmp_entry_redirected);
+		kfree(tmp_entry_target);
+		goto out_add_new_entry;
+	}
+	spin_unlock(&susfs_spin_lock_open_redirect);
+
+out_add_new_entry:
+	new_entry_target->target_ino = target_inode->i_ino;
+	new_entry_target->target_dev = target_inode->i_sb->s_dev;
+	new_entry_target->redirected_ino = redirected_inode->i_ino;
+	new_entry_target->redirected_dev = redirected_inode->i_sb->s_dev;
+	new_entry_target->info.uid_scheme = info.uid_scheme;
+	new_entry_target->reversed_lookup_only = false;
+	new_entry_target->spoofed_mnt_id = real_mount(target_path.mnt)->mnt_id;
+	(void)vfs_statfs(&target_path, &new_entry_target->spoofed_kstatfs);
+	memcpy(&new_entry_target->info, &info, sizeof(info));
+
+	new_entry_redirected->target_ino = redirected_inode->i_ino;
+	new_entry_redirected->target_dev = redirected_inode->i_sb->s_dev;
+	new_entry_redirected->redirected_ino = target_inode->i_ino;
+	new_entry_redirected->redirected_dev = target_inode->i_sb->s_dev;
+	new_entry_redirected->info.uid_scheme = info.uid_scheme;
+	new_entry_redirected->reversed_lookup_only = true;
+	new_entry_redirected->spoofed_mnt_id = real_mount(target_path.mnt)->mnt_id;
+	memcpy(&new_entry_redirected->spoofed_kstatfs, &new_entry_target->spoofed_kstatfs, sizeof(struct kstatfs));
+	strncpy(new_entry_redirected->info.target_pathname, info.redirected_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
+	strncpy(new_entry_redirected->info.redirected_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
+
 	spin_lock(&susfs_spin_lock_open_redirect);
 	hash_add(OPEN_REDIRECT_HLIST, &new_entry->node, info.target_ino);
 	spin_unlock(&susfs_spin_lock_open_redirect);
@@ -875,16 +939,176 @@ out_copy_to_user:
 	SUSFS_LOGI("CMD_SUSFS_ADD_OPEN_REDIRECT -> ret: %d\n", info.err);
 }
 
-struct filename* susfs_get_redirected_path(unsigned long ino) {
-	struct st_susfs_open_redirect_hlist *entry;
+struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode) {
+	struct st_susfs_open_redirect_hlist *entry = NULL;
+	struct filename *new_filename = NULL;
+	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
 
-	hash_for_each_possible(OPEN_REDIRECT_HLIST, entry, node, ino) {
-		if (entry->target_ino == ino) {
-			SUSFS_LOGI("Redirect for ino: %lu\n", ino);
-			return getname_kernel(entry->redirected_pathname);
+	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
+		if (!entry->reversed_lookup_only &&
+			entry->target_ino == inode->i_ino &&
+			entry->target_dev == inode->i_sb->s_dev)
+		{
+			switch(entry->info.uid_scheme) {
+				case UID_NON_APP_PROC:
+					if (current_uid().val % 100000 < 10000)
+						break;
+					goto out_srcu_read_unlock;
+				case UID_ROOT_PROC_EXCEPT_SU_PROC:
+					if (current_uid().val == 0 && !susfs_is_current_ksu_domain())
+						break;
+					goto out_srcu_read_unlock;
+				case UID_NON_SU_PROC:
+					if (!susfs_is_current_ksu_domain())
+						break;
+					goto out_srcu_read_unlock;
+				case UID_UMOUNTED_APP_PROC:
+					if (susfs_is_current_proc_umounted_app())
+						break;
+					goto out_srcu_read_unlock;
+				case UID_UMOUNTED_PROC:
+					if (susfs_is_current_proc_umounted())
+						break;
+					goto out_srcu_read_unlock;
+				default:
+					goto out_srcu_read_unlock;
+			}
+			SUSFS_LOGI("redirect path '%s' to '%s', uid_scheme: %d\n",
+					entry->info.target_pathname, entry->info.redirected_pathname, entry->info.uid_scheme);
+			new_filename = getname_kernel(entry->info.redirected_pathname);
+			srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+			return new_filename;
 		}
 	}
-	return ERR_PTR(-ENOENT);
+out_srcu_read_unlock:
+	srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+	return new_filename;
+}
+
+int susfs_open_redirect_spoof_vfs_readlink(struct inode *inode, char __user *buffer, int buflen) {
+	struct st_susfs_open_redirect_hlist *entry = NULL;
+	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+
+	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
+		if (entry->reversed_lookup_only &&
+			entry->target_ino == inode->i_ino &&
+			entry->target_dev == inode->i_sb->s_dev)
+		{
+			SUSFS_LOGI("spoof path '%s' to '%s'\n",
+					entry->info.target_pathname, entry->info.redirected_pathname);
+			if (strlen(entry->info.redirected_pathname) >= buflen) {
+				SUSFS_LOGE("buflen not big enough\n");
+				srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+				return -ENAMETOOLONG;
+			}
+			if (copy_to_user(buffer, entry->info.redirected_pathname, strlen(entry->info.redirected_pathname))) {
+				SUSFS_LOGE("copy_to_user() failed\n");
+				srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+				return -EFAULT;
+			}
+			srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+			return 0;
+		}
+	}
+	srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+	return -ENOENT;
+}
+
+int susfs_open_redirect_spoof_do_proc_readlink(struct inode *inode, char *tmp_buf, int buflen) {
+	struct st_susfs_open_redirect_hlist *entry = NULL;
+	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+
+	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
+		if (entry->reversed_lookup_only &&
+			entry->target_ino == inode->i_ino &&
+			entry->target_dev == inode->i_sb->s_dev)
+		{
+			SUSFS_LOGI("spoof path '%s' to '%s'\n",
+					entry->info.target_pathname, entry->info.redirected_pathname);
+			if (strlen(entry->info.redirected_pathname) >= buflen) {
+				SUSFS_LOGE("buflen not big enough\n");
+				srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+				return -ENAMETOOLONG;
+			}
+			strncpy(tmp_buf, entry->info.redirected_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
+			srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+			return 0;
+		}
+	}
+	srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+	return -ENOENT;
+}
+
+int susfs_open_redirect_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf) {
+	struct st_susfs_open_redirect_hlist *entry = NULL;
+	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+
+	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
+		if (entry->reversed_lookup_only &&
+			entry->target_ino == inode->i_ino &&
+			entry->target_dev == inode->i_sb->s_dev)
+		{
+			SUSFS_LOGI("spoof kstatfs for redirected path: '%s'\n",
+					entry->info.target_pathname);
+			memcpy(buf, &entry->spoofed_kstatfs, sizeof(struct kstatfs));
+			srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+			return 0;
+		}
+	}
+	srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+	return -EINVAL;
+}
+
+int susfs_open_redirect_spoof_seq_show(struct inode *inode, int *out_mnt_id, unsigned long *out_ino) {
+	struct st_susfs_open_redirect_hlist *entry = NULL;
+	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+
+	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
+		if (entry->reversed_lookup_only &&
+			entry->target_ino == inode->i_ino &&
+			entry->target_dev == inode->i_sb->s_dev)
+		{
+			*out_mnt_id = entry->spoofed_mnt_id;
+			*out_ino = entry->redirected_ino;
+			srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+			return 0;
+		}
+	}
+	srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+	return -EINVAL;
+}
+
+int susfs_open_redirect_spoof_show_map_vma(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char *spoofed_name) {
+	struct st_susfs_open_redirect_hlist *entry = NULL;
+	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+
+	if (spoofed_name) {
+		SUSFS_LOGE("spoofed_name must be NULL first!\n");
+		return -EINVAL;
+	}
+
+	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
+		if (entry->reversed_lookup_only &&
+			entry->target_ino == inode->i_ino &&
+			entry->target_dev == inode->i_sb->s_dev)
+		{
+			spoofed_name = kzalloc(SUSFS_MAX_LEN_PATHNAME, GFP_KERNEL);
+			if (!spoofed_name) {
+				SUSFS_LOGE("no enough memeory\n");
+				srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+				return -ENOMEM;
+			}
+			SUSFS_LOGI("spoof maps ino/dev/name for redirected path: '%s'\n",
+					entry->info.target_pathname);
+			*out_ino = entry->redirected_ino;
+			*out_dev = entry->redirected_dev;
+			strncpy(spoofed_name, entry->info.redirected_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
+			srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+			return 0;
+		}
+	}
+	srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);
+	return -EINVAL;
 }
 #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 
@@ -1162,11 +1386,11 @@ static int watch_one_dir(struct watch_dir *wd)
  * Cleanup is deferred to a delayed_work that runs outside the SRCU context.
  */
 static int susfs_handle_sdcard_inode_event(
-    struct fsnotify_group *group,
-    struct inode *to_tell,
-    u32 mask, const void *data, int data_type,
-    const unsigned char *file_name, u32 cookie,
-    struct fsnotify_iter_info *iter_info)
+								struct fsnotify_group *group,
+								struct inode *to_tell,
+								u32 mask, const void *data, int data_type,
+								const unsigned char *file_name, u32 cookie,
+								struct fsnotify_iter_info *iter_info)
 {
 	if (!file_name || strlen(file_name) != 7 ||
 	    memcmp(file_name, "Android", 7))
