@@ -54,7 +54,7 @@ jobs:
           mkdir -p "$TOOLCHAIN_DIR"
 
           curl -fL \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-qpr2-release/clang-r563880.tar.gz" \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/heads/android16-qpr2-release/clang-r563880.tar.gz" \
             -o /tmp/clang.tar.gz
 
           tar -xzf /tmp/clang.tar.gz -C "$TOOLCHAIN_DIR"
