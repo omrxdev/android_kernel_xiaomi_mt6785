@@ -7,6 +7,8 @@
 #include <linux/hashtable.h>
 #include <linux/path.h>
 #include <linux/susfs_def.h>
+#include <linux/stat.h>
+#include <linux/statfs.h>
 
 #define SUSFS_VERSION "v2.0.0"
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
