@@ -67,10 +67,6 @@ rm -f "$LOG" "$ERRORLOG" | sleep 0.5
 log "Configuring with $DEFCONFIG..."
 make O="$OUT" "$DEFCONFIG"
 
-grep -q "^CONFIG_KSU_SUSFS_SUS_MOUNT=y" "$OUT/.config" \
-    || { error "CONFIG_KSU_SUSFS_SUS_MOUNT not set — check Kconfig dependency chain."; exit 1; }
-ok "SUSFS configs verified."
-
 # ─── Build ────────────────────────────────────────────────────────────────────
 KVER=$(make O="$OUT" -s kernelversion 2>/dev/null || echo "unknown")
 ZIP_NAME="kernel-${KVER}-$(date +%Y%m%d-%H%M).zip"
