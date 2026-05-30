@@ -20,6 +20,7 @@
 
 extern bool susfs_is_current_ksu_domain(void);
 extern void setup_selinux(const char *domain, struct cred *cred);
+extern struct cred *ksu_cred;
 
 #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
 bool susfs_is_log_enabled __read_mostly = true;
@@ -201,10 +202,13 @@ out_copy_to_user:
 	SUSFS_LOGI("CMD_SUSFS_ADD_SUS_PATH_LOOP -> ret: %d\n", info.err);
 }
 
-void susfs_run_sus_path_loop(uid_t uid) {
+static void susfs_run_sus_path_loop(void) {
 	struct st_susfs_sus_path_list *cursor = NULL;
 	struct path path;
 	struct inode *inode;
+	struct fuse_inode *fi = NULL;
+	const struct cred *saved = override_creds(ksu_cred);
+	int srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
 
 	list_for_each_entry_rcu(cursor, &LH_SUS_PATH_LOOP, list) {
 		if (!kern_path(cursor->target_pathname, 0, &path))
@@ -235,15 +239,8 @@ void susfs_run_sus_path_loop(uid_t uid) {
 			SUSFS_LOGI("re-flag '%s' as SUS_PATH for uid: %u\n", cursor->target_pathname, uid);
 		}
 	}
-}
-
-static inline bool is_i_uid_in_android_data_not_allowed(uid_t i_uid) {
-	return (likely(susfs_is_current_proc_umounted()) &&
-		unlikely(current_uid().val != i_uid));
-}
-
-static inline bool is_i_uid_in_sdcard_not_allowed(void) {
-	return (likely(susfs_is_current_proc_umounted()));
+	srcu_read_unlock(&susfs_srcu_sus_path_loop, srcu_idx);
+	revert_creds(saved);
 }
 
 static inline bool is_i_uid_not_allowed(uid_t i_uid) {
@@ -1550,7 +1547,7 @@ static int susfs_sdcard_monitor_fn(void *data)
 		return -ENOMEM;
 	}
 
-	setup_selinux("u:r:su:s0", cred);
+	setup_selinux("u:r:ksu:s0", cred);
 	commit_creds(cred);
 
 	if (!susfs_is_current_ksu_domain()) {
@@ -1587,11 +1584,24 @@ void susfs_start_sdcard_monitor_fn(void) {
 	}
 }
 
+// - defer extra susfs works to workqueue after do_umount in ksu_handle_setresuid()
+//   so that we do not block there and reduce the risk of time side channel as much as possible.
+struct work_struct susfs_extra_works;
+static void susfs_run_extra_works(struct work_struct *work) {
+	if (!ksu_cred)
+		return;
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	susfs_run_sus_path_loop();
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+}
+
 /* susfs_init */
 void susfs_init(void) {
 #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
 	susfs_my_uname_init();
 #endif
+	SUSFS_LOGI("Initializing susfs_extra_works\n");
+	INIT_WORK(&susfs_extra_works, susfs_run_extra_works);
 	SUSFS_LOGI("susfs is initialized! version: " SUSFS_VERSION " \n");
 }
 
