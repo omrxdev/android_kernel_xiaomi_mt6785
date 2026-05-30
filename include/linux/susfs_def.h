@@ -74,8 +74,12 @@
 #define ND_STATE_OPEN_LAST 64
 #define ND_STATE_LAST_SDCARD_SUS_PATH 128
 #define ND_FLAGS_LOOKUP_LAST		0x2000000
- 
+
 #define MAGIC_MOUNT_WORKDIR "/debug_ramdisk/workdir"
+
+#ifndef FUSE_SUPER_MAGIC
+#define FUSE_SUPER_MAGIC 0x65735546
+#endif
 
 static inline bool susfs_is_current_proc_umounted(void) {
 	return test_ti_thread_flag(&current->thread_info, TIF_PROC_UMOUNTED);
