@@ -36,7 +36,7 @@
  * operation is supplied.
  */
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-extern void susfs_sus_ino_for_generic_fillattr(unsigned long ino, struct kstat *stat);
+extern void susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *stat);
 #endif
 
 void generic_fillattr(struct inode *inode, struct kstat *stat)
@@ -44,7 +44,7 @@ void generic_fillattr(struct inode *inode, struct kstat *stat)
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 	if (likely(susfs_is_current_proc_umounted()) &&
 			unlikely(inode->i_mapping->flags & BIT_SUS_KSTAT)) {
-		susfs_sus_ino_for_generic_fillattr(inode->i_ino, stat);
+		susfs_generic_fillattr_spoofer(inode, stat);
 		stat->mode = inode->i_mode;
 		stat->rdev = inode->i_rdev;
 		stat->uid = inode->i_uid;

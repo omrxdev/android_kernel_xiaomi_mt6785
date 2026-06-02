@@ -28,7 +28,7 @@
 #include "internal.h"
 
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-extern void susfs_sus_ino_for_show_map_vma(unsigned long ino, dev_t *out_dev, unsigned long *out_ino);
+extern void susfs_show_map_vma_spoofer(struct inode *inode, dev_t *out_dev, unsigned long *out_ino);
 #endif
 
 #define SEQ_PUT_DEC(str, val) \
@@ -394,7 +394,7 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
 #endif
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 		if (unlikely(inode->i_mapping->flags & BIT_SUS_KSTAT)) {
-			susfs_sus_ino_for_show_map_vma(inode->i_ino, &dev, &ino);
+			susfs_show_map_vma_spoofer(inode, &dev, &ino);
 			goto bypass_orig_flow;
 		}
 #endif
