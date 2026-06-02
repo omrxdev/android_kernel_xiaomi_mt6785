@@ -137,4 +137,4 @@ all.config
 out/
 *.rej
 *.orig
-.vscode
+compile_commands.json
