@@ -42,8 +42,9 @@ extern void susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *st
 void generic_fillattr(struct inode *inode, struct kstat *stat)
 {
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-	if (likely(susfs_is_current_proc_umounted()) &&
-			unlikely(inode->i_mapping->flags & BIT_SUS_KSTAT)) {
+	if (unlikely(test_bit(AS_FLAGS_SUS_KSTAT, &inode->i_state)) &&
+		likely(susfs_is_current_proc_umounted_app()))
+	{
 		susfs_generic_fillattr_spoofer(inode, stat);
 		stat->mode = inode->i_mode;
 		stat->rdev = inode->i_rdev;
@@ -168,15 +169,6 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
 }
 EXPORT_SYMBOL(vfs_statx_fd);
 
-#ifdef CONFIG_KSU_SUSFS
-extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
-#else
-extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-#endif
-#endif
-
 /**
  * vfs_statx - Get basic and extra attributes by filename
  * @dfd: A file descriptor representing the base dir for a relative filename
@@ -198,18 +190,6 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
 	struct path path;
 	int error = -EINVAL;
 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
-
-#ifdef CONFIG_KSU_SUSFS
-	if (likely(susfs_is_current_proc_umounted())) {
-		goto orig_flow;
-	}
-
-	if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val))) {
-		ksu_handle_stat(&dfd, &filename, &flags);
-	}
-
-orig_flow:
-#endif
 
 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
 		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
@@ -381,7 +361,7 @@ SYSCALL_DEFINE2(newstat, const char __user *, filename,
 	return cp_new_stat(&stat, statbuf);
 }
 
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS)
+#if defined(CONFIG_KSU)
 __attribute__((hot)) 
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
 				int *flags);
@@ -397,9 +377,6 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
 	if (error)
 		return error;
 
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS)
-	ksu_handle_stat(&dfd, &filename, &flag);
-#endif
 	return cp_new_stat(&stat, statbuf);
 }
 
@@ -410,7 +387,7 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
 	struct kstat stat;
 	int error;
 
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS) // 32-bit su
+#if defined(CONFIG_KSU)
 	ksu_handle_stat(&dfd, &filename, &flag); 
 #endif
 	error = vfs_fstatat(dfd, filename, &stat, flag);

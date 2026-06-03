@@ -107,17 +107,6 @@ out_kfree:
 		kfree(pathname);
 	}
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	if (PRE_CHECK_OPEN_REDIRECT(file_inode(file))) {
-		if (susfs_open_redirect_spoof_seq_show(file_inode(file), &mnt_id, &ino))
-			goto orig_flow;
-		seq_printf(m, "pos:\t%lli\nflags:\t0%o\nmnt_id:\t%i\nino:\t%lu\n",
-				(long long)file->f_pos, f_flags,
-				mnt_id,
-				ino);
-		goto bypass_orig_flow;
-	}
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 
 #if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
 orig_flow:

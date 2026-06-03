@@ -36,9 +36,8 @@
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 extern bool susfs_is_current_ksu_domain(void);
-extern bool susfs_is_boot_completed_triggered;
+extern bool susfs_is_sdcard_android_data_decrypted;
 
-static DEFINE_IDA(susfs_ksu_mnt_group_ida);
 static atomic64_t susfs_ksu_mounts = ATOMIC64_INIT(0);
 
 #define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
@@ -146,13 +145,13 @@ static int mnt_alloc_group_id(struct mount *mnt)
 {
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	int res;
-		/* - At frist susfs_is_boot_completed_triggered is set to false in kernel,
+		/* - At frist susfs_is_sdcard_android_data_decrypted is set to false in kernel,
 	 *   and it is still allowed to assign our custom mnt_group_id via susfs_ksu_mnt_group_ida
-	 *   if it is ksu mounts, until susfs_is_boot_completed_triggered is set to true
+	 *   if it is ksu mounts, until susfs_is_sdcard_android_data_decrypted is set to true
 	 *   when boot-completed stage is triggered in core_hook.c 
 	 */
-	if (!susfs_is_boot_completed_triggered && mnt->mnt_id >= DEFAULT_KSU_MNT_ID) {
-		res = ida_alloc_min(&susfs_ksu_mnt_group_ida, DEFAULT_KSU_MNT_GROUP_ID, GFP_KERNEL);
+	if (susfs_is_current_ksu_domain()) {
+		res = ida_alloc_min(&mnt_group_ida, DEFAULT_KSU_MNT_GROUP_ID, GFP_KERNEL);
 		goto bypass_orig_flow;
 	}
 	res = ida_alloc_min(&mnt_group_ida, 1, GFP_KERNEL);
@@ -171,22 +170,6 @@ bypass_orig_flow:
  */
 void mnt_release_group_id(struct mount *mnt)
 {
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	/* - when boot-completed stage is triggered in core_hook.c,
-	 *   susfs_is_boot_completed_triggered will be set to true.
-	 * - Please note that if susfs_is_boot_completed_triggered is true, then
-	 *   it no longer checks for the sus mnt_group_id, and the allocated
-	 *   sus mnt_group_id will stay in kernel memory forever, and if user
-	 *   suddenly umounts the sus mount in global mnt namespace, the ida_free()
-	 *   function will throw error to kernel log, but it won't affect the system,
-	 *   so it is fine.
-	 */
-	if (!susfs_is_boot_completed_triggered && mnt->mnt_group_id >= DEFAULT_KSU_MNT_GROUP_ID) {
-		ida_free(&susfs_ksu_mnt_group_ida, mnt->mnt_group_id);
-		mnt->mnt_group_id = 0;
-		return;
-	}
-#endif
 	ida_free(&mnt_group_ida, mnt->mnt_group_id);
 	mnt->mnt_group_id = 0;
 }
@@ -1111,7 +1094,7 @@ struct vfsmount *vfs_create_mount(struct fs_context *fc)
 		return ERR_PTR(-EINVAL);
 	sb = fc->root->d_sb;
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-    if (!susfs_is_boot_completed_triggered && susfs_is_current_ksu_domain()) {
+    if (!susfs_is_sdcard_android_data_decrypted && susfs_is_current_ksu_domain()) {
         mnt = susfs_alloc_sus_vfsmnt(fc->source ?: "susfs"); // fallback name
         atomic64_add(1, &susfs_ksu_mounts);
         goto bypass_orig_flow;
@@ -1215,7 +1198,7 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	// - We do not check anymore for ksu process if boot-completed stage is triggered
 	//   just to stop the performance loss
-	if (susfs_is_boot_completed_triggered) {
+	if (susfs_is_sdcard_android_data_decrypted) {
 		goto skip_checking_for_ksu_proc;
 	}
 
@@ -3897,33 +3880,64 @@ const struct proc_ns_operations mntns_operations = {
 };
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-/* Reorder the mnt_id after all sus mounts are umounted during ksu_handle_setuid() */
-void susfs_reorder_mnt_id(void) {
-	struct mnt_namespace *mnt_ns = current->nsproxy->mnt_ns;
-	struct mount *mnt;
-	int first_mnt_id = 0;
+/* - To retrieve the non sus mount id from mount */
+int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt) {
+	struct mount *mnt = orig_mnt;
+	int mnt_id;
 
-	if (!mnt_ns) {
-		return;
-	}
-
-	// Do not reorder the mnt_id if there is no any ksu mount at all
-	if (atomic64_read(&susfs_ksu_mounts) == 0) {
-		return;
-	}
-
-	get_mnt_ns(mnt_ns);
-
-	first_mnt_id = list_first_entry(&mnt_ns->list, struct mount, mnt_list)->mnt_id;
-	list_for_each_entry(mnt, &mnt_ns->list, mnt_list) {
-		// It is very important that we don't reorder the sus mount if it is not umounted
-		if (mnt->mnt_id == DEFAULT_KSU_MNT_ID) {
-			continue;
-		}
-		WRITE_ONCE(mnt->mnt.susfs_mnt_id_backup, READ_ONCE(mnt->mnt_id));
-		WRITE_ONCE(mnt->mnt_id, first_mnt_id++);
-	}
-
-	put_mnt_ns(mnt_ns);
+	lock_mount_hash();
+	for (; mnt && mnt->mnt_parent && mnt != mnt->mnt_parent && mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) { }
+	mnt_id = mnt->mnt_id;
+	unlock_mount_hash();
+	return mnt_id;
 }
-#endif
+
+/* - To retrieve the non sus vfsmount from vfsmount, takes a reference on &mnt->mnt and mnt->mnt.mnt_root */
+struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt) {
+	struct mount *mnt = real_mount(vfsmnt);
+
+	lock_mount_hash();
+	for (; mnt && mnt->mnt_parent && mnt != mnt->mnt_parent && mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) { }
+	mntget(&mnt->mnt);
+	if (!mnt->mnt.mnt_root || IS_ERR(mnt->mnt.mnt_root)) {
+		mntput(&mnt->mnt);
+		unlock_mount_hash();
+		return vfsmnt;
+	}
+	dget(mnt->mnt.mnt_root);
+	unlock_mount_hash();
+	return &mnt->mnt;
+}
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+
+// #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+// /* Reorder the mnt_id after all sus mounts are umounted during ksu_handle_setuid() */
+// void susfs_reorder_mnt_id(void) {
+// 	struct mnt_namespace *mnt_ns = current->nsproxy->mnt_ns;
+// 	struct mount *mnt;
+// 	int first_mnt_id = 0;
+
+// 	if (!mnt_ns) {
+// 		return;
+// 	}
+
+// 	// Do not reorder the mnt_id if there is no any ksu mount at all
+// 	if (atomic64_read(&susfs_ksu_mounts) == 0) {
+// 		return;
+// 	}
+
+// 	get_mnt_ns(mnt_ns);
+
+// 	first_mnt_id = list_first_entry(&mnt_ns->list, struct mount, mnt_list)->mnt_id;
+// 	list_for_each_entry(mnt, &mnt_ns->list, mnt_list) {
+// 		// It is very important that we don't reorder the sus mount if it is not umounted
+// 		if (mnt->mnt_id == DEFAULT_KSU_MNT_ID) {
+// 			continue;
+// 		}
+// 		WRITE_ONCE(mnt->mnt.susfs_mnt_id_backup, READ_ONCE(mnt->mnt_id));
+// 		WRITE_ONCE(mnt->mnt_id, first_mnt_id++);
+// 	}
+
+// 	put_mnt_ns(mnt_ns);
+// }
+// #endif
