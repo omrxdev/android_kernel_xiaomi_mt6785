@@ -138,3 +138,4 @@ out/
 *.rej
 *.orig
 compile_commands.json
+builds/
