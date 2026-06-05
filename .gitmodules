@@ -1,0 +1,4 @@
+[submodule "susfs"]
+    path = KernelSU-Next
+    url = https://github.com/omrxdev/KernelSU-Next
+    branch = legacy-susfs-v2
