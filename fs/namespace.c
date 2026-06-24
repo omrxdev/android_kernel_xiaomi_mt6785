@@ -1212,8 +1212,36 @@ static struct mount *clone_mnt(struct mount *old, struct dentry *root,
 	struct super_block *sb = old->mnt.mnt_sb;
 	struct mount *mnt;
 	int err;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	// - We do not check anymore for ksu process if boot-completed stage is triggered
+	//   just to stop the performance loss
+	if (susfs_is_boot_completed_triggered) {
+		goto skip_checking_for_ksu_proc;
+	}
 
+	// First we must check for ksu process because of magic mount
+	if (susfs_is_current_ksu_domain()) {
+		// if it is unsharing, we reuse the old->mnt_id
+		if (flag & CL_COPY_MNT_NS) {
+			mnt = susfs_reuse_sus_vfsmnt(old->mnt_devname, old->mnt_id);
+			goto bypass_orig_flow;
+		}
+		// else we just go assign fake mnt_id
+		mnt = susfs_alloc_sus_vfsmnt(old->mnt_devname);
+		goto bypass_orig_flow;
+	}
+
+skip_checking_for_ksu_proc:
+	// Lastly for other processes of which old->mnt_id == DEFAULT_KSU_MNT_ID, go assign fake mnt_id
+	if (old->mnt_id == DEFAULT_KSU_MNT_ID) {
+		mnt = susfs_alloc_sus_vfsmnt(old->mnt_devname);
+		goto bypass_orig_flow;
+	}
+#endif
 	mnt = alloc_vfsmnt(old->mnt_devname);
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+bypass_orig_flow:
+#endif
 	if (!mnt)
 		return ERR_PTR(-ENOMEM);
 
@@ -3281,6 +3309,9 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 	copy_flags = CL_COPY_UNBINDABLE | CL_EXPIRE;
 	if (user_ns != ns->user_ns)
 		copy_flags |= CL_SHARED_TO_SLAVE | CL_UNPRIVILEGED;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	copy_flags |= CL_COPY_MNT_NS;
+#endif
 	new = copy_tree(old, old->mnt.mnt_root, copy_flags);
 	if (IS_ERR(new)) {
 		namespace_unlock();
@@ -3864,3 +3895,35 @@ const struct proc_ns_operations mntns_operations = {
 	.install	= mntns_install,
 	.owner		= mntns_owner,
 };
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+/* Reorder the mnt_id after all sus mounts are umounted during ksu_handle_setuid() */
+void susfs_reorder_mnt_id(void) {
+	struct mnt_namespace *mnt_ns = current->nsproxy->mnt_ns;
+	struct mount *mnt;
+	int first_mnt_id = 0;
+
+	if (!mnt_ns) {
+		return;
+	}
+
+	// Do not reorder the mnt_id if there is no any ksu mount at all
+	if (atomic64_read(&susfs_ksu_mounts) == 0) {
+		return;
+	}
+
+	get_mnt_ns(mnt_ns);
+
+	first_mnt_id = list_first_entry(&mnt_ns->list, struct mount, mnt_list)->mnt_id;
+	list_for_each_entry(mnt, &mnt_ns->list, mnt_list) {
+		// It is very important that we don't reorder the sus mount if it is not umounted
+		if (mnt->mnt_id == DEFAULT_KSU_MNT_ID) {
+			continue;
+		}
+		WRITE_ONCE(mnt->mnt.susfs_mnt_id_backup, READ_ONCE(mnt->mnt_id));
+		WRITE_ONCE(mnt->mnt_id, first_mnt_id++);
+	}
+
+	put_mnt_ns(mnt_ns);
+}
+#endif
