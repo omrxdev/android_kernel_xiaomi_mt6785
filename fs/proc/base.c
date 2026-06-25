@@ -2198,6 +2198,10 @@ proc_map_files_readdir(struct file *file, struct dir_context *ctx)
 	struct map_files_info *p;
 	int ret;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+	struct inode *inode;
+#endif
+
 	ret = -ENOENT;
 	task = get_proc_task(file_inode(file));
 	if (!task)
