@@ -146,3 +146,4 @@ Image.gz
 *.cmd
 compile_commands.json
 builds/
+logs/
