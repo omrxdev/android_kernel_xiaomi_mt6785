@@ -71,7 +71,7 @@ echo -e "\n${YELLOW}====================\n By omrXdev\n====================${NC}
 
 # ─── Sanity checks ────────────────────────────────────────────────────────────
 [[ ! -f "$TOOLCHAIN/clang" ]] && { error "Toolchain not found at $TOOLCHAIN/clang Please run with --toolchain to configure it, or set it manually in the build script."; exit 1; }
-[[ ! -d "$ANYKERNEL_DIR"   ]] && { error "AnyKernel3 not found at $ANYKERNEL_DIR. creating..."; mkdir -p "$ANYKERNEL_DIR";  exit 1; }
+[[ ! -d "$ANYKERNEL_DIR"   ]] && { error "AnyKernel3 not found at $ANYKERNEL_DIR. creating..."; mkdir -p "$ANYKERNEL_DIR"; sleep 1; }
 
 log "Toolchain: $("$TOOLCHAIN/clang" --version | head -1)" | sleep 0.5
 
