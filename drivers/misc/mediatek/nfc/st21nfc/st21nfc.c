@@ -1095,6 +1095,7 @@ static int __init st21nfc_dev_init(void)
 	//rosemary project_number is 2
 	int project_number;
 	project_number = board_id_get_hwversion_product_num();
+	project_number = 2;
 
 	pr_info("Loading st21nfc driver\n");
 
